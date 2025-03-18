@@ -1,8 +1,13 @@
 """
 counting.py
+
+Functions for the Back-Propagation Counting method.
+
+This module provides tools to process pixelated silicon detector data, including prior computation,
+frame counting using PyTorch optimization, and storage in HDF5 format.
 """
-import numpy as np
 import h5py
+import numpy as np
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
@@ -14,28 +19,113 @@ from scipy.stats import poisson
 import torch
 import torch.nn.functional as F
 
+# Set the device ('cpu', 'cuda', 'mps')
 device = 'cuda'
 
-def gaussian_splash_pytorch(A, sigma, size=3, device='cpu'):
-    """Prepare the Gaussian splash as a PyTorch convolution kernel."""
-    x = y = torch.arange(0, size, device=device) - (size // 2)
-    X, Y = torch.meshgrid(x, y)
-    gaussian = A * torch.exp(- (X**2 + Y**2) / (2 * sigma**2))
-    # Reshape to 4D tensor: (out_channels, in_channels, height, width)
-    gaussian_kernel = gaussian.unsqueeze(0).unsqueeze(0)
-    return gaussian_kernel
+# -----------------------------------------------------------------------------------
+# Helper methods for counting
+# -----------------------------------------------------------------------------------
+def compute_conditional_probabilities(lam_grid):
+    """
+    Compute conditional probabilities P(n >= 2 | n >= 1) for a grid of "lambda" values
+    (average electron hit probabilities).
 
-def construct_modeled_frame_pytorch(frame_ct, splash_kernel, device='cpu'):
-    """Construct the modeled frame using convolution to apply the Gaussian splash."""
+    Parameters
+    ----------
+    lam_grid : ndarray
+        A numpy array of lambda values (Poisson parameter).
+
+    Returns
+    -------
+    ndarray
+        A numpy array of conditional probabilities P(n >= 2 | n >= 1).
+
+    Notes
+    -----
+    Uses the Poisson distribution to calculate probabilities, with safeguards against division by zero.
+    """
+    # Compute P(n >= 1) and P(n >= 2) for each lambda in the grid
+    p_at_least_1 = 1 - poisson.cdf(0, lam_grid)  # P(n >= 1) = 1 - P(n < 1)
+    p_at_least_2 = 1 - poisson.cdf(1, lam_grid)  # P(n >= 2) = 1 - P(n <= 1)
+    
+    # Conditional probability P(n >= 2) / P(n >= 1)
+    # Safeguard division by zero by using np.where to only compute valid divisions
+    conditional_prob = np.where(p_at_least_1 > 0, p_at_least_2 / p_at_least_1, 0)
+    
+    return conditional_prob
+
+def compute_prior(frames_file, nframes, baseline, gauss_A):
+    """
+    Compute the "prior" from a set of frames. The prior consists of the average number
+    of electron hits at each pixel in the frame and has the same dimensions as a single frame.
+
+    Parameters
+    ----------
+    frames_file : str
+        Path to the HDF5 file containing the frames dataset.
+    nframes : int
+        Number of frames to use for computing the prior.
+    baseline : float
+        Baseline value to subtract from each frame.
+    gauss_A : float
+        Amplitude of the Gaussian profile for a single electron.
+
+    Returns
+    -------
+    ndarray
+        The computed "prior" frame.
+
+    Notes
+    -----
+    The prior is computed by summing frames, normalizing, and eliminating negative values.
+    """
+
+    # Create the "prior"
+    with h5py.File(frames_file, 'r') as f0:
+        data = f0['frames']
+        
+        # Get all frames and subtract the baseline
+        prior_bls = np.array(data[0:nframes,:,:],dtype=np.float32) - baseline
+        print(f"Prior values, {nframes} frames, shape: {prior_bls.shape}")
+        
+    # Compute the summed frame
+    prior_frame = np.sum(prior_bls,axis=0)
+    print("Summed frame dimensions:",prior_frame.shape)
+
+    # Divide by the average electron amplitude
+    prior_frame /= gauss_A
+
+    # Normalize by the number of frames to get the final "prior"
+    prior_frame /= nframes
+
+    # Eliminate negative values
+    prior_frame[prior_frame < 0] = 0.
+
+    return prior_frame
+
+def construct_modeled_frame_pytorch(frame_ct, splash_kernel):
+    """
+    Construct a frame from the count grid by applying a Gaussian electron strike
+    profile (kernel) via convolution.
+
+    Parameters
+    ----------
+    frame_ct : torch.Tensor
+        The count grid tensor (batch of 2D arrays).
+    splash_kernel : torch.Tensor
+        The Gaussian kernel for convolution.
+
+    Returns
+    -------
+    torch.Tensor
+        The modeled frame after applying the Gaussian splash.
+    """
+
     # Ensure frame_ct is a float tensor and add batch and channel dimensions
     frame_ct_tensor = frame_ct.float().unsqueeze(1)
     
     # Apply the Gaussian splash across the entire frame using convolution
     modeled_frame = F.conv2d(frame_ct_tensor, splash_kernel, padding=splash_kernel.shape[-1]//2)
-    
-    # Add noise
-    #noise_sigma = 1.0
-    #modeled_frame = modeled_frame + torch.normal(0, noise_sigma, size=modeled_frame.shape, device=device)
     
     # Remove batch and channel dimensions from the output
     modeled_frame = modeled_frame.squeeze(1)
@@ -43,8 +133,35 @@ def construct_modeled_frame_pytorch(frame_ct, splash_kernel, device='cpu'):
     return modeled_frame
 
 def count_frame_pytorch(frame_bls, frame_ct, gauss_A, gauss_sigma, n_steps_max=5000, loss_lim = 1, min_loss_patience = 10, min_loss_improvement = 0.01):
-    """Counts a frame given initial guess frame_ct"""
-    
+    """
+    Count electrons in a frame using PyTorch optimization.
+
+    Parameters
+    ----------
+    frame_bls : ndarray
+        Baseline-subtracted frame data.
+    frame_ct : ndarray
+        Initial guess for the counted frame.
+    gauss_A : float
+        Amplitude of the Gaussian profile.
+    gauss_sigma : float
+        Standard deviation of the Gaussian profile.
+    n_steps_max : int, optional
+        Maximum number of optimization steps (default: 5000).
+    loss_lim : float, optional
+        Loss threshold to stop optimization (default: 1).
+    min_loss_patience : int, optional
+        Number of steps to wait for loss improvement (default: 10).
+    min_loss_improvement : float, optional
+        Minimum relative loss improvement to continue (default: 0.01).
+
+    Returns
+    -------
+    tuple
+        - ndarray: The counted frame.
+        - ndarray: The modeled frame, which is the counted frame convoluted with the Gaussian profile (kernel).
+        - ndarray: Loss values at each step.
+    """
     # Convert frame and frame_ct to a PyTorch tensor
     frame_tensor = torch.from_numpy(frame_bls).to(device)
     frame_ct_tensor = torch.tensor(frame_ct, dtype=torch.float32, device=device, requires_grad=True)
@@ -52,8 +169,8 @@ def count_frame_pytorch(frame_bls, frame_ct, gauss_A, gauss_sigma, n_steps_max=5
     # Define the optimizer
     optimizer = torch.optim.Adam([frame_ct_tensor], lr=0.01)
 
-    # Define the single-electron Gaussian splash
-    splash = gaussian_splash_pytorch(gauss_A,gauss_sigma,device=device)
+    # Define the single-electron Gaussian "splash
+    splash = gaussian_splash_pytorch(gauss_A,gauss_sigma)
 
     # Set up the parameters for the iteration
     n_steps = 0
@@ -70,7 +187,7 @@ def count_frame_pytorch(frame_bls, frame_ct, gauss_A, gauss_sigma, n_steps_max=5
         optimizer.zero_grad()  # Clear previous gradients
 
         # Construct the modeled frame
-        modeled_frame = construct_modeled_frame_pytorch(frame_ct_tensor, splash, device=device)
+        modeled_frame = construct_modeled_frame_pytorch(frame_ct_tensor, splash)
 
         # Compute the loss (negative likelihood)
         loss = torch.sum((frame_tensor - modeled_frame) ** 2)
@@ -104,12 +221,29 @@ def count_frame_pytorch(frame_bls, frame_ct, gauss_A, gauss_sigma, n_steps_max=5
     return frame_ct_tensor.cpu().detach().numpy(), modeled_frame.cpu().detach().numpy(), loss_steps
 
 def frame_to_indices_weights(counted_frames):
-    """Convert a batch of 2D counted frames into lists of linear indices and weights."""
+    """
+    Convert counted frames to lists of linear indices and weights.
+
+    Parameters
+    ----------
+    counted_frames : ndarray
+        Batch of 2D counted frames.
+
+    Returns
+    -------
+    tuple
+        - list: Linear indices of non-zero pixels for each frame.
+        - list: Weights (counts) at those indices.
+    """
+    # Get the batch size and frame shape
     batch_size = counted_frames.shape[0]
     frame_shape = counted_frames.shape[1:]
+
+    # Set up lists for the indices and weights
     all_linear_indices = []
     all_weights = []
 
+    # Convert the counted frames to lists of indices and weights
     for i in range(batch_size):
         frame = counted_frames[i]
         nonzero_indices = np.nonzero(frame)
@@ -121,32 +255,70 @@ def frame_to_indices_weights(counted_frames):
 
     return all_linear_indices, all_weights
 
+def gaussian_splash_pytorch(A, sigma, size=3):
+    """
+    Create a Gaussian "splash" kernel for convolution in PyTorch.
+
+    Parameters
+    ----------
+    A : float
+        Amplitude of the Gaussian.
+    sigma : float
+        Standard deviation of the Gaussian.
+    size : int, optional
+        Size of the kernel (default: 3).
+
+    Returns
+    -------
+    torch.Tensor
+        4D tensor representing the Gaussian kernel.
+    """
+    # Compute the Gaussian kernel
+    x = y = torch.arange(0, size, device=device) - (size // 2)
+    X, Y = torch.meshgrid(x, y)
+    gaussian = A * torch.exp(- (X**2 + Y**2) / (2 * sigma**2))
+
+    # Reshape to 4D tensor: (out_channels, in_channels, height, width)
+    gaussian_kernel = gaussian.unsqueeze(0).unsqueeze(0)
+    return gaussian_kernel
+
 def update_counted_data_hdf5(file_path, nframes, batch_start_idx, frames_indices, frames_weights, scan_shape, frame_shape, group_name='electron_events'):
     """
-    Updates an HDF5 file with counted frames, weights, and scan positions.
+    Update an HDF5 file with counted frame data.
 
-    Args:
-        file_path (str): Path to the HDF5 file.
-        nframes (int): Total number of frames.
-        batch_start_idx (int): Starting index for the current batch.
-        frames_indices (list of arrays): List of arrays where each array contains pixel indices for one frame.
-        frames_weights (list of arrays): List of arrays where each array contains weights for one frame.
-        scan_shape (tuple): Shape of the scan grid as (Ny, Nx).
-        frame_shape (tuple): Shape of each frame as (Ny, Nx).
-        group_name (str): Name of the group in the HDF5 file where data will be stored.
+    Parameters
+    ----------
+    file_path : str
+        Path to the HDF5 file.
+    nframes : int
+        Total number of frames.
+    batch_start_idx : int
+        Starting index for the current batch.
+    frames_indices : list
+        List of arrays with pixel indices for each frame.
+    frames_weights : list
+        List of arrays with weights for each frame.
+    scan_shape : tuple
+        Shape of the scan grid (Ny, Nx).
+    frame_shape : tuple
+        Shape of each frame (Ny, Nx).
+    group_name : str, optional
+        HDF5 group name (default: 'electron_events').
     """
     
     with h5py.File(file_path, 'a') as f:  # Open file in append mode
+
         # Create or access the group
         if group_name not in f:
             grp = f.create_group(group_name)
         else:
             grp = f[group_name]
 
-        # Check if the VL datasets exist, create them if not
+        # Check if the variable-length datasets exist, and create them if not
         if 'frames' not in grp:
             vl_dtype_indices = h5py.special_dtype(vlen=np.dtype('uint32'))
             vl_dataset_indices = grp.create_dataset("frames", (nframes,), dtype=vl_dtype_indices)
+            
             # Add frame size attributes to 'frames' dataset
             vl_dataset_indices.attrs['Nx'] = frame_shape[1]
             vl_dataset_indices.attrs['Ny'] = frame_shape[0]
@@ -172,62 +344,58 @@ def update_counted_data_hdf5(file_path, nframes, batch_start_idx, frames_indices
         for i, (indices, weights) in enumerate(zip(frames_indices, frames_weights)):
             vl_dataset_indices[batch_start_idx+i] = indices
             vl_dataset_weights[batch_start_idx+i] = weights
-            
-def compute_conditional_probabilities(lam_grid):
-    """
-    Compute the array of conditional probabilities P(n >= 2) / P(n >= 1) for a grid of lambda values.
-    
-    :param lam_grid: A 576x576 numpy array of lambda values.
-    :return: A 576x576 numpy array of conditional probabilities.
-    """
-    # Compute P(n >= 1) and P(n >= 2) for each lambda in the grid
-    p_at_least_1 = 1 - poisson.cdf(0, lam_grid)  # P(n >= 1) = 1 - P(n < 1)
-    p_at_least_2 = 1 - poisson.cdf(1, lam_grid)  # P(n >= 2) = 1 - P(n <= 1)
-    
-    # Conditional probability P(n >= 2) / P(n >= 1)
-    # Safeguard division by zero by using np.where to only compute valid divisions
-    conditional_prob = np.where(p_at_least_1 > 0, p_at_least_2 / p_at_least_1, 0)
-    
-    return conditional_prob
 
-def compute_prior(frames_file, nframes, baseline, gauss_A):
-    """
-    Computes the prior using nframes from the specified file.
-
-    :return: the prior, along with the conditional probabilities for having >= 2 counts
-    """
-
-    # Create the "prior"
-    with h5py.File(frames_file, 'r') as f0:
-        data = f0['frames']
-        
-        # Get all frames and subtract the baseline.
-        prior_bls = np.array(data[0:nframes,:,:],dtype=np.float32) - baseline
-        print(f"Prior values, {nframes} frames, shape: {prior_bls.shape}")
-        
-    # Compute the summed frame.
-    prior_frame = np.sum(prior_bls,axis=0)
-    print("Summed frame dimensions:",prior_frame.shape)
-
-    # Divide by the average electron amplitude.
-    prior_frame /= gauss_A
-
-    # Normalize by the number of frames to get the final "prior".
-    prior_frame /= nframes
-
-    # Eliminate negative values.
-    prior_frame[prior_frame < 0] = 0.
-
-    return prior_frame
+# -----------------------------------------------------------------------------------
+# Main counting function
+# -----------------------------------------------------------------------------------
 
 def count_frames(frames_file, counted_file, frames_per_batch, 
                  th_single_elec, baseline, gauss_A, gauss_sigma, 
                  n_steps_max = 5000, loss_per_frame_stop = 1, min_loss_patience = 10, min_loss_improvement = 0.01, 
                  batch_start = 0, batch_end = -1, nframes_prior=0, record_loss_curves = True):
     """
-    Counts the frames from the given file and saves the counted data to an HDF5 file.
-    """
+    Count electrons in frames and save results to an HDF5 file.
 
+    Parameters
+    ----------
+    frames_file : str
+        Path to the input HDF5 file with raw frames.
+    counted_file : str
+        Path to the output HDF5 file for counted data.
+    frames_per_batch : int
+        Number of frames to process per batch.
+    th_single_elec : float
+        Threshold for single electron detection.
+    baseline : float
+        Baseline value to subtract from frames.
+    gauss_A : float
+        Gaussian amplitude for electron profile.
+    gauss_sigma : float
+        Gaussian standard deviation for electron profile.
+    n_steps_max : int, optional
+        Maximum optimization steps (default: 5000).
+    loss_per_frame_stop : float, optional
+        Loss per frame threshold to stop (default: 1).
+    min_loss_patience : int, optional
+        Patience for loss improvement (default: 10).
+    min_loss_improvement : float, optional
+        Minimum loss improvement (default: 0.01).
+    batch_start : int, optional
+        Starting batch index (default: 0).
+    batch_end : int, optional
+        Ending batch index (default: -1, meaning all batches).
+    nframes_prior : int, optional
+        Number of frames for prior computation (default: 0).
+    record_loss_curves : bool, optional
+        Whether to record loss curves (default: True).
+
+    Returns
+    -------
+    tuple
+        - list: Loss curves for each batch.
+        - ndarray: Last batch's counted frames.
+        - ndarray: Last batch's modeled frames (counted frames convoluted with Gaussian profile).
+    """
     # Compute the prior if nframes_prior > 0.
     if(nframes_prior > 0):
 
@@ -250,7 +418,7 @@ def count_frames(frames_file, counted_file, frames_per_batch,
         data = f0['frames']
         nframes = data.shape[0]
         frame_shape = data.shape[1:]
-        scan_shape = f0['stem']['images'].shape[1:]
+        scan_shape = f0['frames'].attrs['scan_dimensions']
         print(f"Counting all {nframes} frames for scan of shape {scan_shape}")
 
     # Record all loss curves.

@@ -1,5 +1,7 @@
 """
 profile.py
+
+Functions for extracting and fitting a Gaussian profile sparse electron datasets.
 """
 import numpy as np
 import h5py
@@ -7,6 +9,21 @@ import matplotlib.pyplot as plt
 from scipy.optimize import minimize
 
 def randomized_scan_order(nrows, ncols):
+    """
+    Generate a randomized order of pixel indices for scanning.
+
+    Parameters
+    ----------
+    nrows : int
+        Number of rows in the frame.
+    ncols : int
+        Number of columns in the frame.
+
+    Returns
+    -------
+    list
+        List of (row, col) tuples in randomized order, excluding edges.
+    """
     indices = [(i, j) for i in range(1, nrows-1) for j in range(1, ncols-1)]
     np.random.shuffle(indices)
     return indices
@@ -14,13 +31,18 @@ def randomized_scan_order(nrows, ncols):
 def extract_3x3_patches(original_frames, processed_frames):
     """
     Extract 3x3 patches from original frames based on hits identified in processed frames.
-    
-    Args:
-    - original_frames: numpy array of original frames (non-baseline-subtracted, non-thresholded).
-    - processed_frames: numpy array of frames after baseline subtraction and thresholding.
-    
-    Returns:
-    - numpy array of 3x3 patches centered around identified hits.
+
+    Parameters
+    ----------
+    original_frames : ndarray
+        Array of original frames (non-baseline-subtracted, non-thresholded).
+    processed_frames : ndarray
+        Array of processed frames (baseline-subtracted and thresholded).
+
+    Returns
+    -------
+    ndarray
+        Array of 3x3 patches centered around identified hits.
     """
     hit_patches = []
     nrows, ncols = processed_frames.shape[1], processed_frames.shape[2]  # Frame dimensions
@@ -44,21 +66,28 @@ def gaussian_profile(file_path, nframes, baseline, th_single_elec, plot_results=
     """
     Process frames to extract the average 3x3 patch of electron hits, fit it to a Gaussian, 
     and return the optimized Gaussian parameters and patches.
-    
-    Args:
-    - file_path (str): Path to the HDF5 file containing the frames.
-    - nframes (int): Number of frames to process.
-    - baseline (float): Baseline value to subtract from the frames.
-    - th_single_elec (float): Threshold for identifying single electron hits.
-    - plot_results (bool): If True, plots the original average patch, the optimized Gaussian, and their difference.
 
-    Returns:
-    - avg_patch (np.ndarray): The average 3x3 patch computed from the identified hits.
-    - optimized_patch (np.ndarray): The 3x3 patch after fitting to the Gaussian model.
-    - A_opt (float): The optimized amplitude of the Gaussian.
-    - sigma_opt (float): The optimized standard deviation (width) of the Gaussian.
-    """
-    
+    Parameters
+    ----------
+    file_path : str
+        Path to the HDF5 file containing the frames.
+    nframes : int
+        Number of frames to process.
+    baseline : float
+        Baseline value to subtract from frames.
+    th_single_elec : float
+        Threshold for identifying single electron hits.
+    plot_results : bool, optional
+        Plot the original average patch, the optimized Gaussian, and their difference. (default: True).
+
+    Returns
+    -------
+    tuple
+        - ndarray: Average 3x3 patch from identified hits.
+        - ndarray: The 3x3 Gaussian patch after fitting to the Gaussian model.
+        - float: Optimized Gaussian amplitude (A_opt).
+        - float: Optimized Gaussian standard deviation (sigma_opt).
+    """    
     print(f"Processing scan at {file_path}...")
     
     with h5py.File(file_path, 'r') as f0:
