@@ -94,8 +94,8 @@ def gaussian_profile(file_path, nframes, baseline, th_single_elec, plot_results=
         data = f0['frames']
         frames = data[0:nframes, :, :]
         
-        # Subtract baseline and apply threshold
-        sub_frames = frames - baseline
+        # Subtract baseline and apply threshold (convert to float32 to allow for negative values).
+        sub_frames = frames.astype('float32') - baseline
         sub_frames_th = np.where(sub_frames >= th_single_elec, sub_frames, 0)
         
         # Extract the 3x3 patches
