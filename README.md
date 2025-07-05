@@ -10,7 +10,7 @@ This repository provides tools for electron counting in pixelated silicon detect
 
 ### Documentation
 
-**The full documentation, including API reference and examples, is hosted on Read the Docs: [https://backpropcount.readthedocs.io](https://backpropcount.readthedocs.io)**
+The full documentation, including API reference and examples, is hosted on Read the Docs: [https://backpropcount.readthedocs.io](https://backpropcount.readthedocs.io)
 
 ---
 

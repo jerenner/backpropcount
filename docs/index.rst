@@ -10,8 +10,7 @@ as in 4D-STEM, using back-propagation.
    :maxdepth: 2
    :caption: Contents:
 
-   counting
-   profile
+   modules
 
 Overview
 --------
@@ -32,4 +31,3 @@ Indices and tables
 ------------------
 * :ref:`genindex`
 * :ref:`modindex`
-* :ref:`search`
