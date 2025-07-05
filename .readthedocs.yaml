@@ -9,6 +9,11 @@ build:
   os: ubuntu-22.04
   tools:
     python: "3.9"
+  jobs:
+    pre_build:
+      # Run sphinx-apidoc to auto-generate the .rst files
+      # from the source code before the main build starts.
+      - "sphinx-apidoc -o docs -e --force backpropcount/"
 
 # Location of Sphinx configuration file
 sphinx:

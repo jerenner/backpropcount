@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, os.path.abspath('../backpropcount'))
 
 project = 'backpropcount'
-copyright = '2025, J. Renner, M. A. Wright, C. C. S. Pedroso, B. E. C, A. Saha, K. Bouchard, P. Ercius, P. Denes, A. Goldschmidt'
+copyright = '2025, J. Renner, M. A. Wright, C. C. S. Pedroso, B. E. Cohen, A. Saha, K. Bouchard, P. Ercius, P. Denes, A. Goldschmidt'
 author = 'J. Renner, M. A. Wright, C. C. S. Pedroso, B. E. Cohen, A. Saha, K. Bouchard, P. Ercius, P. Denes, A. Goldschmidt'
 
 # -- General configuration ---------------------------------------------------
