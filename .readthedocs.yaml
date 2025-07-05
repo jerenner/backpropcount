@@ -17,9 +17,5 @@ sphinx:
 # Python installation requirements.
 python:
   install:
-    # Install the project itself in editable mode (`pip install -e .`)
-    - method: pip
-      path: .
-      
     # Install the documentation-specific dependencies.
     - requirements: docs/requirements.txt
