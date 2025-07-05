@@ -1,0 +1,11 @@
+# docs/requirements.txt
+
+# Core scientific libraries
+numpy
+scipy
+h5py
+matplotlib
+torch
+
+# Sphinx theme used for the documentation
+sphinx-rtd-theme
