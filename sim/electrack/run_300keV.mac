@@ -1,0 +1,23 @@
+# Macro file for ElecTrack
+# 
+# Can be run in batch, without graphic
+# or interactively: Idle> /control/execute run3M_300keV.mac
+#
+# Change the default number of workers (in multi-threading mode) 
+#/run/numberOfWorkers 4
+#
+/random/setSeeds 770353837 70597151
+# Initialize kernel
+/run/initialize
+#
+/control/verbose 0
+/run/verbose 0
+/event/verbose 0
+/tracking/verbose 0
+
+# Set energy 
+/gun/energy 300 keV
+
+# Launch 3 million events
+/run/printProgress 1000
+/run/beamOn 3000000 
